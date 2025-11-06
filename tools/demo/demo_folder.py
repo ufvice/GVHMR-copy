@@ -57,10 +57,21 @@ CRF = 23  # 17 基本无损；+6 大约减半码率
 # -----------------------------
 # 公共：单视频 cfg 构建 + 预处理/数据载入/渲染
 # -----------------------------
-def build_cfg_for_video(video_path: Path, output_root: Path, static_cam: bool, use_dpvo: bool, f_mm: int, verbose: bool):
-    """为单个视频构建 Hydra cfg，并把原视频规范化复制到 cfg.video_path。
+def build_cfg_for_video(
+    video_path: Path,
+    output_root: Path,
+    static_cam: bool,
+    use_dpvo: bool,
+    f_mm: int,
+    verbose: bool,
+    use_original_video: bool,
+):
+    """
+    为单个视频构建 Hydra cfg，并把原视频规范化复制到 cfg.video_path。
+    新增: use_original_video=True 时，跳过规范化复制，直接使用原视频路径。
     去掉 tqdm，改为 Log 进度。
-    参考原实现：复制流程与目录创建。"""
+    参考原实现：复制流程与目录创建。
+    """
     assert video_path.exists(), f"Video not found at {video_path}"
     length, width, height = get_video_lwh(video_path)
     Log.info(f"[Input]: {video_path}")
@@ -85,20 +96,28 @@ def build_cfg_for_video(video_path: Path, output_root: Path, static_cam: bool, u
     Path(cfg.output_dir).mkdir(parents=True, exist_ok=True)
     Path(cfg.preprocess_dir).mkdir(parents=True, exist_ok=True)
 
-    # 将原视频“规范化”拷贝到 cfg.video_path（统一帧率/编码以简化后续流程）
-    Log.info(f"[Copy Video] {video_path} -> {cfg.video_path}")
-    need_copy = (not Path(cfg.video_path).exists()) or (get_video_lwh(video_path)[0] != get_video_lwh(cfg.video_path)[0])
-    if need_copy:
-        reader = get_video_reader(video_path)
-        writer = get_writer(cfg.video_path, fps=30, crf=CRF)
-        total = get_video_lwh(video_path)[0]
-        step = max(total // 10, 1)
-        for idx, img in enumerate(reader):
-            writer.write_frame(img)
-            if (idx % step == 0) or (idx + 1 == total):
-                Log.info(f"[Copy] {idx + 1}/{total}")
-        writer.close()
-        reader.close()
+    # 处理视频路径
+    if use_original_video:
+        # 直接使用原视频，不做统一化复制
+        cfg.video_path = str(video_path)
+        Log.info(f"[Skip Copy] Use original video directly: {cfg.video_path}")
+    else:
+        # 将原视频“规范化”拷贝到 cfg.video_path（统一帧率/编码以简化后续流程）
+        Log.info(f"[Copy Video] {video_path} -> {cfg.video_path}")
+        need_copy = (not Path(cfg.video_path).exists()) or (
+            get_video_lwh(video_path)[0] != get_video_lwh(cfg.video_path)[0]
+        )
+        if need_copy:
+            reader = get_video_reader(video_path)
+            writer = get_writer(cfg.video_path, fps=30, crf=CRF)
+            total = get_video_lwh(video_path)[0]
+            step = max(total // 10, 1)
+            for idx, img in enumerate(reader):
+                writer.write_frame(img)
+                if (idx % step == 0) or (idx + 1 == total):
+                    Log.info(f"[Copy] {idx + 1}/{total}")
+            writer.close()
+            reader.close()
 
     return cfg
 
@@ -314,6 +333,12 @@ def parse_folder_args():
     parser.add_argument("--verbose", action="store_true", help="写入中间可视化（bbox/pose）")
     # 新增：batch_size 暴露到命令行（用于可用的特征提取批量）
     parser.add_argument("--batch_size", type=int, default=8, help="特征抽取的批大小（Extractor支持则生效）")
+    # 新增：跳过统一化视频（直接使用原视频）
+    parser.add_argument(
+        "--use_original_video",
+        action="store_true",
+        help="跳过统一化拷贝，直接读取原视频（不强制统一帧率/编码）",
+    )
     return parser.parse_args()
 
 
@@ -389,6 +414,7 @@ def main():
             use_dpvo=args.use_dpvo,
             f_mm=args.f_mm,
             verbose=args.verbose,
+            use_original_video=args.use_original_video,  # 新增参数传递
         )
         cfg_list.append((sequence_name, cfg))
 
