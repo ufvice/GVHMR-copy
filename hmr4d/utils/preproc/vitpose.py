@@ -11,10 +11,16 @@ from hmr4d.utils.geo.flip_utils import flip_heatmap_coco17
 
 
 class VitPoseExtractor:
-    def __init__(self, tqdm_leave=True):
+    def __init__(self, tqdm_leave: bool = True, device: torch.device | None = None):
         ckpt_path = "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"
-        # 在 GPU 可用时使用 CUDA，否则退回 CPU，方便在 TPU/CPU 环境下运行
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # 允许外部传入 device（例如 XLA 设备）；如果不给，则按照 CUDA→CPU 的优先级选择。
+        # 注意：若传入的是 XLA 设备对象（xm.xla_device()），则后续算子是否真正支持 TPU/XLA
+        # 取决于 ViTPose 和其依赖库，对此本项目并不做完整保证。
+        if device is None:
+            # 在 GPU 可用时使用 CUDA，否则退回 CPU，方便在 TPU/CPU 环境下运行
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
         self.pose = build_model("ViTPose_huge_coco_256x192", ckpt_path)
         self.pose.to(self.device).eval()
 

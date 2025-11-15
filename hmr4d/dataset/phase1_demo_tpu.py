@@ -15,6 +15,13 @@ from hmr4d.utils.geo_transform import compute_cam_angvel
 from hmr4d.utils.pylogger import Log
 from pytorch3d.transforms import quaternion_to_matrix
 
+try:
+    import torch_xla.core.xla_model as xm
+
+    _HAS_XLA = True
+except Exception:  # pragma: no cover - 仅在无 XLA 环境下触发
+    _HAS_XLA = False
+
 
 class Phase1DemoDatasetTPU(Dataset):
     """
@@ -68,7 +75,14 @@ class Phase1DemoDatasetTPU(Dataset):
     def _get_vitpose_extractor(self) -> VitPoseExtractor:
         if self._vitpose_extractor is None:
             # tqdm_leave=False 以避免多 worker 下的多重进度条
-            self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False)
+            # 若检测到 torch_xla，可尝试将 ViTPose 模型放到 XLA 设备上。
+            # 注意：在 DataLoader 使用多进程 + XLA 时可能存在不稳定因素，建议在这种模式下将
+            # num_workers 设为 0（单进程）再使用。
+            if _HAS_XLA:
+                device = xm.xla_device()
+                self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False, device=device)
+            else:
+                self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False)
         return self._vitpose_extractor
 
     def _get_feature_extractor(self) -> Extractor:
@@ -184,4 +198,3 @@ class Phase1DemoDatasetTPU(Dataset):
 
 
 __all__ = ["Phase1DemoDatasetTPU"]
-
