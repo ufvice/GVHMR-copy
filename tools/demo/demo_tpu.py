@@ -1,6 +1,7 @@
 import argparse
 from pathlib import Path
 from typing import Dict, Any
+import time
 
 import torch
 from torch.utils.data import DataLoader
@@ -13,6 +14,12 @@ from hmr4d.utils.pylogger import Log
 
 from hmr4d.dataset.phase1_demo_tpu import Phase1DemoDatasetTPU
 from hmr4d.model.gvhmr.gvhmr_pl_demo_tpu import DemoPLTPU
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
+    Log.warn("[TPU Demo] wandb 未安装，跳过 W&B 日志记录")
 
 
 def parse_args_to_cfg_tpu():
@@ -157,8 +164,31 @@ def build_entry_from_outputs(
 def main():
     cfg = parse_args_to_cfg_tpu()
 
+    wandb_run = None
+    if wandb is not None:
+        # 初始化 wandb：记录基本配置与硬件信息（TPU 环境由 torch_xla 管理）
+        run_name = f"tpu_demo_{Path(cfg.bbox_pt).stem}"
+        wandb_run = wandb.init(
+            project="gvhmr_tpu_demo",
+            name=run_name,
+            config={
+                "video_root": cfg.video_root,
+                "bbox_pt": cfg.bbox_pt,
+                "output_labels_pt": cfg.output_labels_pt,
+                "static_cam": cfg.static_cam,
+                "use_dpvo": cfg.use_dpvo,
+                "f_mm": cfg.f_mm,
+                "num_workers": cfg.num_workers,
+            },
+        )
+
     # DataLoader（CPU 预处理 + 多 worker）
     loader = build_dataloader(cfg)
+    num_videos = len(loader.dataset)
+
+    if wandb_run is not None:
+        # 记录一份数据量级信息，方便在 dashboard 上查看整体任务规模
+        wandb.log({"data/num_videos": num_videos}, step=0)
 
     # HMR4D 模型（TPU 前向）
     Log.info("[HMR4D-TPU] Building model")
@@ -170,17 +200,34 @@ def main():
 
     from tqdm import tqdm
 
-    for sample in tqdm(loader, desc="TPU Inference"):
+    for idx, sample in enumerate(tqdm(loader, desc="TPU Inference")):
         video_id = sample["video_id"]
         Log.info(f"[TPU Demo] processing video_id = {video_id}")
+
+        t0 = time.time()
 
         # DemoPLTPU.predict 内部完成 XLA 前向 + xm._fetch 回 CPU
         outputs = model.predict(sample, static_cam=cfg.static_cam)
         entry = build_entry_from_outputs(sample, outputs)
         labels_dict[video_id] = entry
 
+        if wandb_run is not None:
+            # 每个视频记录一次进度与简单性能信息（执行时间）
+            elapsed = time.time() - t0
+            wandb.log(
+                {
+                    "progress/video_index": idx + 1,
+                    "progress/num_videos": num_videos,
+                    "timing/per_video_seconds": elapsed,
+                },
+                step=idx + 1,
+            )
+
     Log.info(f"[TPU Demo] Saving labels to {cfg.output_labels_pt}")
     torch.save(labels_dict, cfg.output_labels_pt)
+
+    if wandb_run is not None:
+        wandb_run.finish()
 
 
 if __name__ == "__main__":
