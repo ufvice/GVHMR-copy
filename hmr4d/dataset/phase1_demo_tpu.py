@@ -75,14 +75,9 @@ class Phase1DemoDatasetTPU(Dataset):
     def _get_vitpose_extractor(self) -> VitPoseExtractor:
         if self._vitpose_extractor is None:
             # tqdm_leave=False 以避免多 worker 下的多重进度条
-            # 若检测到 torch_xla，可尝试将 ViTPose 模型放到 XLA 设备上。
-            # 注意：在 DataLoader 使用多进程 + XLA 时可能存在不稳定因素，建议在这种模式下将
-            # num_workers 设为 0（单进程）再使用。
-            if _HAS_XLA:
-                device = xm.xla_device()
-                self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False, device=device)
-            else:
-                self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False)
+            # ViTPose 在 TPU/XLA 上的支持并不完全，在本 demo 中统一放在 CPU
+            #（或 GPU，如可用）上进行推理，更稳定。
+            self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False)
         return self._vitpose_extractor
 
     def _get_feature_extractor(self) -> Extractor:
