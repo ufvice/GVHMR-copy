@@ -167,6 +167,7 @@ def main():
     cfg = parse_args_to_cfg_tpu()
 
     wandb_run = None
+    global_step = 0  # 全局 step 计数，避免多阶段重复使用 step 造成 wandb 警告
     if wandb is not None:
         # 初始化 wandb：记录基本配置与硬件信息（TPU 环境由 torch_xla 管理）
         run_name = f"tpu_demo_{Path(cfg.bbox_pt).stem}"
@@ -191,7 +192,7 @@ def main():
 
     if wandb_run is not None:
         # 记录一份数据量级信息，方便在 dashboard 上查看整体任务规模
-        wandb.log({"data/num_videos": num_videos}, step=0)
+        wandb.log({"data/num_videos": num_videos}, step=global_step)
 
     ########################################
     # 阶段 0：基础元信息预计算（长度 / 相机内参）
@@ -257,12 +258,13 @@ def main():
         }
 
         if wandb_run is not None:
+            global_step += 1
             wandb.log(
                 {
                     "progress_vo/video_index": idx + 1,
                     "progress_vo/num_videos": num_videos,
                 },
-                step=idx + 1,
+                step=global_step,
             )
 
     ########################################
@@ -280,12 +282,13 @@ def main():
         kp2d_dict[video_id] = kp2d
 
         if wandb_run is not None:
+            global_step += 1
             wandb.log(
                 {
                     "progress_vitpose/video_index": idx + 1,
                     "progress_vitpose/num_videos": num_videos,
                 },
-                step=idx + 1,
+                step=global_step,
             )
 
     ########################################
@@ -303,12 +306,13 @@ def main():
         feat_dict[video_id] = vit_features
 
         if wandb_run is not None:
+            global_step += 1
             wandb.log(
                 {
                     "progress_hmr2/video_index": idx + 1,
                     "progress_hmr2/num_videos": num_videos,
                 },
-                step=idx + 1,
+                step=global_step,
             )
 
     ########################################
@@ -358,13 +362,14 @@ def main():
 
         if wandb_run is not None:
             elapsed = time.time() - t0
+            global_step += 1
             wandb.log(
                 {
                     "progress/video_index": idx + 1,
                     "progress/num_videos": num_videos,
                     "timing/per_video_seconds": elapsed,
                 },
-                step=idx + 1,
+                step=global_step,
             )
 
     Log.info(f"[TPU Demo] Saving labels to {cfg.output_labels_pt}")
