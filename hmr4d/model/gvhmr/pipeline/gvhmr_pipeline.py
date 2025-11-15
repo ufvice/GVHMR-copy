@@ -105,6 +105,17 @@ class Pipeline(nn.Module):
                 outputs["pred_smpl_params_global"]["body_pose"] = body_pose
                 outputs["pred_smpl_params_incam"]["body_pose"] = body_pose
 
+            # 推理阶段补充 3D/2D joints（不影响训练分支）
+            with torch.no_grad():
+                pred_joints_c = self.endecoder.fk_v2(**outputs["pred_smpl_params_incam"])  # (B, L, 22, 3)
+                pred_joints_w = self.endecoder.fk_v2(**outputs["pred_smpl_params_global"])  # (B, L, 22, 3)
+                from hmr4d.utils.geo.hmr_cam import perspective_projection
+
+                pred_kp2d_fullimg = perspective_projection(pred_joints_c, inputs["K_fullimg"])  # (B, L, 22, 2)
+                outputs["pred_joints_c"] = pred_joints_c
+                outputs["pred_joints_w"] = pred_joints_w
+                outputs["pred_kp2d_fullimg"] = pred_kp2d_fullimg
+
             return outputs
 
         # ========== Compute Loss ========== #
