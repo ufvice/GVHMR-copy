@@ -87,7 +87,13 @@ class Phase1DemoDatasetTPU(Dataset):
 
     def _get_feature_extractor(self) -> Extractor:
         if self._feature_extractor is None:
-            self._feature_extractor = Extractor(tqdm_leave=False)
+            # 若检测到 torch_xla，可尝试将 HMR2 特征提取器放到 XLA 设备上。
+            # 同样建议在这种模式下将 DataLoader 的 num_workers 设为 0。
+            if _HAS_XLA:
+                device = xm.xla_device()
+                self._feature_extractor = Extractor(tqdm_leave=False, device=device)
+            else:
+                self._feature_extractor = Extractor(tqdm_leave=False)
         return self._feature_extractor
 
     def _compute_vo(

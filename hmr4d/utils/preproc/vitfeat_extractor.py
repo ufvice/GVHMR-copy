@@ -58,8 +58,14 @@ def get_batch(input_path, bbx_xys, img_ds=0.5, img_dst_size=256, path_type="vide
 
 
 class Extractor:
-    def __init__(self, tqdm_leave=True):
-        self.extractor: HMR2 = load_hmr2().cuda().eval()
+    def __init__(self, tqdm_leave: bool = True, device: torch.device | None = None):
+        # 允许外部传入 device（例如 XLA 设备）；若不指定则按照 CUDA→CPU 的优先级选择。
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = device
+
+        self.extractor: HMR2 = load_hmr2().to(self.device).eval()
         self.tqdm_leave = tqdm_leave
 
     def extract_video_features(self, video_path, bbx_xys, img_ds=0.5):
@@ -75,8 +81,8 @@ class Extractor:
 
         # Inference
         F, _, H, W = imgs.shape  # (F, 3, H, W)
-        imgs = imgs.cuda()
-        batch_size = 16  # 5GB GPU memory, occupies all CUDA cores of 3090
+        imgs = imgs.to(self.device)
+        batch_size = 16  # 对于 GPU 约 5GB 显存；在 TPU/CPU 环境可根据需要适当调小
         features = []
         for j in tqdm(range(0, F, batch_size), desc="HMR2 Feature", leave=self.tqdm_leave):
             imgs_batch = imgs[j : j + batch_size]
