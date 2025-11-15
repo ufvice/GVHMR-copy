@@ -1,3 +1,4 @@
+import os
 import torch
 from torch.utils.data import Dataset
 from pathlib import Path
@@ -68,6 +69,8 @@ class Phase1DemoDatasetTPU(Dataset):
         # 运行时按需懒加载的预处理器（在 DataLoader worker 内部初始化）
         self._vitpose_extractor: Optional[VitPoseExtractor] = None
         self._feature_extractor: Optional[Extractor] = None
+        self._cpu_threads = os.cpu_count() or 1
+        self._cpu_threads_configured = False
 
     def __len__(self) -> int:
         return len(self.video_ids)
@@ -91,17 +94,16 @@ class Phase1DemoDatasetTPU(Dataset):
 
     def _get_feature_extractor(self) -> Extractor:
         if self._feature_extractor is None:
-            # HMR2 Feature 提取：尽量把 ViT 主干网络放到 TPU/XLA 上，加速纯神经网络前向；
-            # 但仍然在 CPU 上做视频 IO / crop 等预处理（见 vitfeat_extractor.get_batch）。
-            feat_device = None
-            if _HAS_XLA:
-                try:
-                    feat_device = xm.xla_device()
-                    Log.info("[Phase1DemoDatasetTPU] HMR2 Feature 使用 XLA 设备进行推理")
-                except Exception as e:  # pragma: no cover - XLA 初始化失败时的兜底
-                    Log.warn(f"[Phase1DemoDatasetTPU] XLA 设备初始化失败，HMR2 Feature 退回 CPU/GPU: {e}")
-                    feat_device = None  # 由 Extractor 内部自行选择 CUDA→CPU
-
+            # HMR2 Feature 现在固定在 CPU 上执行，尽量利用多核并行加速纯推理。
+            if not self._cpu_threads_configured:
+                torch.set_num_threads(self._cpu_threads)
+                torch.set_num_interop_threads(self._cpu_threads)
+                self._cpu_threads_configured = True
+                Log.info(
+                    "[Phase1DemoDatasetTPU] HMR2 Feature 使用 CPU 设备并设置 torch num_threads="
+                    f"{self._cpu_threads}"
+                )
+            feat_device = torch.device("cpu")
             self._feature_extractor = Extractor(tqdm_leave=False, device=feat_device)
         return self._feature_extractor
 
