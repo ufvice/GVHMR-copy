@@ -107,19 +107,13 @@ class DemoPLTPU(pl.LightningModule):
         # 仅核心网络（denoiser3d）在 XLA 上前向
         model_output_x = self.pipeline.denoiser3d(length=length_x, **f_condition_x)
 
-        # 将网络输出拉回 CPU，后续 decode + SMPLX 等都在 CPU 上完成
-        fetched = xm._fetch(
-            {
-                "pred_x": model_output_x["pred_x"],
-                "pred_cam": model_output_x["pred_cam"],
-                "static_conf_logits": model_output_x["static_conf_logits"],
-            }
-        )
+        # 标记一个 step，触发 XLA 图执行，然后将网络输出显式搬回 CPU；
+        # 后续 decode + SMPLX 等都在 CPU 上完成，避免在 XLA 上编译复杂几何算子。
         xm.mark_step()
 
-        pred_x = fetched["pred_x"]  # (1, T, C)
-        pred_cam = fetched["pred_cam"]  # (1, T, 3)
-        static_conf_logits = fetched["static_conf_logits"]  # (1, T, *)
+        pred_x = model_output_x["pred_x"].detach().cpu()  # (1, T, C)
+        pred_cam = model_output_x["pred_cam"].detach().cpu()  # (1, T, 3)
+        static_conf_logits = model_output_x["static_conf_logits"].detach().cpu()  # (1, T, *)
 
         # ========= CPU 上复用训练时的后处理逻辑 ========= #
         # 1) decode 到 SMPL 参数空间

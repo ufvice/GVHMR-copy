@@ -75,9 +75,18 @@ class Phase1DemoDatasetTPU(Dataset):
     def _get_vitpose_extractor(self) -> VitPoseExtractor:
         if self._vitpose_extractor is None:
             # tqdm_leave=False 以避免多 worker 下的多重进度条
-            # ViTPose 在 TPU/XLA 上的支持并不完全，在本 demo 中统一放在 CPU
-            #（或 GPU，如可用）上进行推理，更稳定。
-            self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False)
+            # 对于 ViTPose，在 TPU 环境下优先尝试放到 XLA 上做推理；
+            # 若 XLA 不可用或初始化失败，则退回到默认策略（CUDA→CPU）。
+            vitpose_device = None
+            if _HAS_XLA:
+                try:
+                    vitpose_device = xm.xla_device()
+                    Log.info("[Phase1DemoDatasetTPU] ViTPose 使用 XLA 设备进行推理")
+                except Exception as e:  # pragma: no cover - XLA 初始化失败时的兜底
+                    Log.warn(f"[Phase1DemoDatasetTPU] XLA 设备初始化失败，ViTPose 退回 CPU/GPU: {e}")
+                    vitpose_device = None
+
+            self._vitpose_extractor = VitPoseExtractor(tqdm_leave=False, device=vitpose_device)
         return self._vitpose_extractor
 
     def _get_feature_extractor(self) -> Extractor:
