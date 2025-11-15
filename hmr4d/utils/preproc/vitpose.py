@@ -42,7 +42,21 @@ class VitPoseExtractor:
         vitpose = []
         for j in tqdm(range(0, L, batch_size), desc="ViTPose", leave=self.tqdm_leave):
             # Heat map
-            imgs_batch = imgs[j : j + batch_size, :, :, 32:224].to(self.device)
+            imgs_batch = imgs[j : j + batch_size, :, :, 32:224]
+            bbx_xys_batch = bbx_xys[j : j + batch_size]
+
+            # 在 XLA/TPU 上尽量保持 batch 维度恒定，避免因为最后一个 batch
+            # 尺寸不同而触发新的图编译（会体现在最后一步非常慢）。
+            B = imgs_batch.shape[0]
+            if B == 0:
+                continue
+            pad_len = 0
+            if getattr(self.device, "type", None) == "xla" and B < batch_size:
+                pad_len = batch_size - B
+                imgs_batch = torch.cat([imgs_batch, imgs_batch[-1:].expand(pad_len, -1, -1, -1)], dim=0)
+                bbx_xys_batch = torch.cat([bbx_xys_batch, bbx_xys_batch[-1:].expand(pad_len, -1)], dim=0)
+
+            imgs_batch = imgs_batch.to(self.device)
             if self.flip_test:
                 heatmap, heatmap_flipped = self.pose(torch.cat([imgs_batch, imgs_batch.flip(3)], dim=0)).chunk(2)
                 heatmap_flipped = flip_heatmap_coco17(heatmap_flipped)
@@ -66,7 +80,11 @@ class VitPoseExtractor:
                 kp2d = torch.cat([kp2d, conf], dim=-1)
 
             else:  # postprocess from mmpose
-                bbx_xys_batch = bbx_xys[j : j + batch_size]
+                # 若在 XLA 上进行了 padding，这里只保留前 B 条真实样本的结果
+                if pad_len > 0:
+                    heatmap = heatmap[:B]
+
+                bbx_xys_batch = bbx_xys_batch[:B]
                 heatmap = heatmap.clone().cpu().numpy()
                 center = bbx_xys_batch[:, :2].numpy()
                 scale = (torch.cat((bbx_xys_batch[:, [2]] * 24 / 32, bbx_xys_batch[:, [2]]), dim=1) / 200).numpy()

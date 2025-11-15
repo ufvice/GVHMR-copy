@@ -146,6 +146,9 @@ class DemoPLTPU(pl.LightningModule):
                 "pred_cam": pred_cam,
                 "static_conf_logits": static_conf_logits,
             },
+            # 为了与训练/评估阶段的后处理接口保持兼容，同时在顶层提供 static_conf_logits
+            # 供 pp_static_joint / process_ik 直接访问。
+            "static_conf_logits": static_conf_logits,
             "decode_dict": decode_dict,
             "pred_smpl_params_incam": pred_smpl_params_incam,
             "pred_smpl_params_global": pred_smpl_params_global,
