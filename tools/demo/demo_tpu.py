@@ -6,6 +6,7 @@ import time
 import torch
 import hydra
 from hydra import initialize_config_module, compose
+from omegaconf import open_dict
 
 from hmr4d.configs import register_store_gvhmr
 from hmr4d.utils.pylogger import Log
@@ -80,12 +81,13 @@ def parse_args_to_cfg_tpu():
         cfg = compose(config_name="demo", overrides=overrides)
 
     # 额外记录 TPU demo 特有路径
-    cfg.video_root = str(video_root)
-    cfg.bbox_pt = str(bbox_pt)
-    cfg.output_labels_pt = str(output_labels_pt)
-    cfg.vo_cache_pt = str(vo_cache_pt) if vo_cache_pt is not None else None
-    cfg.vitpose_cache_pt = str(vitpose_cache_pt) if vitpose_cache_pt is not None else None
-    cfg.hmr2_cache_pt = str(hmr2_cache_pt) if hmr2_cache_pt is not None else None
+    with open_dict(cfg):
+        cfg.video_root = str(video_root)
+        cfg.bbox_pt = str(bbox_pt)
+        cfg.output_labels_pt = str(output_labels_pt)
+        cfg.vo_cache_pt = str(vo_cache_pt) if vo_cache_pt is not None else None
+        cfg.vitpose_cache_pt = str(vitpose_cache_pt) if vitpose_cache_pt is not None else None
+        cfg.hmr2_cache_pt = str(hmr2_cache_pt) if hmr2_cache_pt is not None else None
     cfg.num_workers = args.num_workers
 
     Log.info(f"[TPU Demo] video_root = {cfg.video_root}")
