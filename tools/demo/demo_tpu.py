@@ -38,6 +38,10 @@ def parse_args_to_cfg_tpu():
     parser.add_argument("--static_cam", action="store_true")
     parser.add_argument("--use_dpvo", action="store_true")
     parser.add_argument("--f_mm", type=int, default=None)
+    # 各阶段中间结果缓存路径（可选），用于避免运行中止后全部重算
+    parser.add_argument("--vo_cache_pt", type=str, default=None)
+    parser.add_argument("--vitpose_cache_pt", type=str, default=None)
+    parser.add_argument("--hmr2_cache_pt", type=str, default=None)
     parser.add_argument("--num_workers", type=int, default=8)
     parser.add_argument("--ckpt_path", type=str, default=None)
     args = parser.parse_args()
@@ -45,10 +49,19 @@ def parse_args_to_cfg_tpu():
     video_root = Path(args.video_root)
     bbox_pt = Path(args.bbox_pt)
     output_labels_pt = Path(args.output_labels_pt)
+    vo_cache_pt = Path(args.vo_cache_pt) if args.vo_cache_pt is not None else None
+    vitpose_cache_pt = Path(args.vitpose_cache_pt) if args.vitpose_cache_pt is not None else None
+    hmr2_cache_pt = Path(args.hmr2_cache_pt) if args.hmr2_cache_pt is not None else None
 
     assert video_root.exists(), f"video_root not found: {video_root}"
     assert bbox_pt.exists(), f"bbox_pt not found: {bbox_pt}"
     output_labels_pt.parent.mkdir(parents=True, exist_ok=True)
+    if vo_cache_pt is not None:
+        vo_cache_pt.parent.mkdir(parents=True, exist_ok=True)
+    if vitpose_cache_pt is not None:
+        vitpose_cache_pt.parent.mkdir(parents=True, exist_ok=True)
+    if hmr2_cache_pt is not None:
+        hmr2_cache_pt.parent.mkdir(parents=True, exist_ok=True)
 
     # Hydra cfg：沿用 demo.yaml，只改 video_name/static_cam/use_dpvo/f_mm/model 等设置
     with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
@@ -70,6 +83,9 @@ def parse_args_to_cfg_tpu():
     cfg.video_root = str(video_root)
     cfg.bbox_pt = str(bbox_pt)
     cfg.output_labels_pt = str(output_labels_pt)
+    cfg.vo_cache_pt = str(vo_cache_pt) if vo_cache_pt is not None else None
+    cfg.vitpose_cache_pt = str(vitpose_cache_pt) if vitpose_cache_pt is not None else None
+    cfg.hmr2_cache_pt = str(hmr2_cache_pt) if hmr2_cache_pt is not None else None
     cfg.num_workers = args.num_workers
 
     Log.info(f"[TPU Demo] video_root = {cfg.video_root}")
@@ -239,33 +255,41 @@ def main():
     ########################################
     Log.info("[TPU Demo] Phase 1: VO / camera extrinsics for all videos")
     vo_dict: Dict[str, Dict[str, torch.Tensor]] = {}
-    for idx, video_id in enumerate(video_ids):
-        info = meta_dict[video_id]
-        video_path: Path = info["video_path"]
-        width: int = info["width"]
-        height: int = info["height"]
-        T: int = info["T"]
+    if cfg.vo_cache_pt is not None and Path(cfg.vo_cache_pt).exists():
+        Log.info(f"[TPU Demo] Phase 1 使用缓存 VO 结果: {cfg.vo_cache_pt}")
+        vo_dict = torch.load(cfg.vo_cache_pt)
+    else:
+        for idx, video_id in enumerate(video_ids):
+            info = meta_dict[video_id]
+            video_path: Path = info["video_path"]
+            width: int = info["width"]
+            height: int = info["height"]
+            T: int = info["T"]
 
-        vo = dataset._compute_vo(video_path, T, width, height)
-        R_w2c = vo["R_w2c"][:T]
-        t_w2c = vo["t_w2c"][:T]
-        cam_angvel = compute_cam_angvel(R_w2c)
+            vo = dataset._compute_vo(video_path, T, width, height)
+            R_w2c = vo["R_w2c"][:T]
+            t_w2c = vo["t_w2c"][:T]
+            cam_angvel = compute_cam_angvel(R_w2c)
 
-        vo_dict[video_id] = {
-            "R_w2c": R_w2c,
-            "t_w2c": t_w2c,
-            "cam_angvel": cam_angvel,
-        }
+            vo_dict[video_id] = {
+                "R_w2c": R_w2c,
+                "t_w2c": t_w2c,
+                "cam_angvel": cam_angvel,
+            }
 
-        if wandb_run is not None:
-            global_step += 1
-            wandb.log(
-                {
-                    "progress_vo/video_index": idx + 1,
-                    "progress_vo/num_videos": num_videos,
-                },
-                step=global_step,
-            )
+            if wandb_run is not None:
+                global_step += 1
+                wandb.log(
+                    {
+                        "progress_vo/video_index": idx + 1,
+                        "progress_vo/num_videos": num_videos,
+                    },
+                    step=global_step,
+                )
+
+        if cfg.vo_cache_pt is not None:
+            Log.info(f"[TPU Demo] Phase 1 完成，保存 VO 结果到 {cfg.vo_cache_pt}")
+            torch.save(vo_dict, cfg.vo_cache_pt)
 
     ########################################
     # 阶段 2：ViTPose 姿态估计（TPU/XLA 上的纯网络前向）
@@ -273,23 +297,31 @@ def main():
     Log.info("[TPU Demo] Phase 2: ViTPose for all videos")
     vitpose_extractor = dataset._get_vitpose_extractor()
     kp2d_dict: Dict[str, torch.Tensor] = {}
-    for idx, video_id in enumerate(video_ids):
-        info = meta_dict[video_id]
-        video_path: Path = info["video_path"]
-        bbx_xys: torch.Tensor = info["bbx_xys"]
+    if cfg.vitpose_cache_pt is not None and Path(cfg.vitpose_cache_pt).exists():
+        Log.info(f"[TPU Demo] Phase 2 使用缓存 ViTPose 结果: {cfg.vitpose_cache_pt}")
+        kp2d_dict = torch.load(cfg.vitpose_cache_pt)
+    else:
+        for idx, video_id in enumerate(video_ids):
+            info = meta_dict[video_id]
+            video_path: Path = info["video_path"]
+            bbx_xys: torch.Tensor = info["bbx_xys"]
 
-        kp2d = vitpose_extractor.extract(str(video_path), bbx_xys, img_ds=dataset.img_ds)
-        kp2d_dict[video_id] = kp2d
+            kp2d = vitpose_extractor.extract(str(video_path), bbx_xys, img_ds=dataset.img_ds)
+            kp2d_dict[video_id] = kp2d
 
-        if wandb_run is not None:
-            global_step += 1
-            wandb.log(
-                {
-                    "progress_vitpose/video_index": idx + 1,
-                    "progress_vitpose/num_videos": num_videos,
-                },
-                step=global_step,
-            )
+            if wandb_run is not None:
+                global_step += 1
+                wandb.log(
+                    {
+                        "progress_vitpose/video_index": idx + 1,
+                        "progress_vitpose/num_videos": num_videos,
+                    },
+                    step=global_step,
+                )
+
+        if cfg.vitpose_cache_pt is not None:
+            Log.info(f"[TPU Demo] Phase 2 完成，保存 ViTPose 结果到 {cfg.vitpose_cache_pt}")
+            torch.save(kp2d_dict, cfg.vitpose_cache_pt)
 
     ########################################
     # 阶段 3：HMR2.0 特征提取（TPU/XLA 上的 ViT 主干前向）
@@ -297,23 +329,31 @@ def main():
     Log.info("[TPU Demo] Phase 3: HMR2 Feature for all videos")
     feat_extractor = dataset._get_feature_extractor()
     feat_dict: Dict[str, torch.Tensor] = {}
-    for idx, video_id in enumerate(video_ids):
-        info = meta_dict[video_id]
-        video_path: Path = info["video_path"]
-        bbx_xys: torch.Tensor = info["bbx_xys"]
+    if cfg.hmr2_cache_pt is not None and Path(cfg.hmr2_cache_pt).exists():
+        Log.info(f"[TPU Demo] Phase 3 使用缓存 HMR2 Feature 结果: {cfg.hmr2_cache_pt}")
+        feat_dict = torch.load(cfg.hmr2_cache_pt)
+    else:
+        for idx, video_id in enumerate(video_ids):
+            info = meta_dict[video_id]
+            video_path: Path = info["video_path"]
+            bbx_xys: torch.Tensor = info["bbx_xys"]
 
-        vit_features = feat_extractor.extract_video_features(str(video_path), bbx_xys, img_ds=dataset.img_ds)
-        feat_dict[video_id] = vit_features
+            vit_features = feat_extractor.extract_video_features(str(video_path), bbx_xys, img_ds=dataset.img_ds)
+            feat_dict[video_id] = vit_features
 
-        if wandb_run is not None:
-            global_step += 1
-            wandb.log(
-                {
-                    "progress_hmr2/video_index": idx + 1,
-                    "progress_hmr2/num_videos": num_videos,
-                },
-                step=global_step,
-            )
+            if wandb_run is not None:
+                global_step += 1
+                wandb.log(
+                    {
+                        "progress_hmr2/video_index": idx + 1,
+                        "progress_hmr2/num_videos": num_videos,
+                    },
+                    step=global_step,
+                )
+
+        if cfg.hmr2_cache_pt is not None:
+            Log.info(f"[TPU Demo] Phase 3 完成，保存 HMR2 Feature 结果到 {cfg.hmr2_cache_pt}")
+            torch.save(feat_dict, cfg.hmr2_cache_pt)
 
     ########################################
     # 阶段 4：GVHMR 模型（TPU 前向，只消费已缓存的特征）
