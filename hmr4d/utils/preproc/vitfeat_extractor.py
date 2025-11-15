@@ -81,15 +81,48 @@ class Extractor:
 
         # Inference
         F, _, H, W = imgs.shape  # (F, 3, H, W)
+
+        # 只把纯卷积/Transformer 前向放到目标 device（包含 XLA）；
+        # 视频解码与裁剪仍在 CPU 完成，避免不必要的 host<->device 往返。
         imgs = imgs.to(self.device)
-        batch_size = 16  # 对于 GPU 约 5GB 显存；在 TPU/CPU 环境可根据需要适当调小
+        batch_size = 16  # 对于 GPU/TPU 约 5GB 显存；在 CPU 环境可根据需要适当调小
+
+        is_xla = hasattr(self.device, "type") and str(self.device.type) == "xla"
         features = []
         for j in tqdm(range(0, F, batch_size), desc="HMR2 Feature", leave=self.tqdm_leave):
             imgs_batch = imgs[j : j + batch_size]
+            B = imgs_batch.shape[0]
+            if B == 0:
+                continue
+
+            pad_len = 0
+            # 在 XLA 上，为避免最后一个 batch 因 batch_size 变化触发额外编译，
+            # 将最后一批补齐到固定 batch_size，再在输出阶段裁掉 padding。
+            if is_xla and B < batch_size:
+                pad_len = batch_size - B
+                imgs_batch = torch.cat(
+                    [imgs_batch, imgs_batch[-1:].expand(pad_len, -1, -1, -1)],
+                    dim=0,
+                )
 
             with torch.no_grad():
                 feature = self.extractor({"img": imgs_batch})
-                features.append(feature.detach().cpu())
 
-        features = torch.cat(features, dim=0).clone()  # (F, 1024)
+                if pad_len > 0:
+                    feature = feature[:B]
+
+                if is_xla:
+                    # 在 XLA 上先保持为 XLA Tensor，统一在函数末尾一次性搬回 CPU，
+                    # 减少多次 host<->device 同步带来的开销。
+                    features.append(feature)
+                else:
+                    features.append(feature.detach().cpu())
+
+        features = torch.cat(features, dim=0)  # (F, 1024)
+        if is_xla:
+            # 对于 XLA：此处触发图执行并拷贝回 CPU。
+            features = features.detach().cpu()
+        else:
+            features = features.clone()
+
         return features

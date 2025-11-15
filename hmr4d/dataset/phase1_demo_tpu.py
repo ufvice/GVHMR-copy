@@ -91,9 +91,18 @@ class Phase1DemoDatasetTPU(Dataset):
 
     def _get_feature_extractor(self) -> Extractor:
         if self._feature_extractor is None:
-            # HMR2 特征提取在 TPU/XLA 上会因为频繁编译/同步而非常慢，
-            # 对于当前「无 GPU、多核 CPU」的场景，强制使用 CPU 更稳定。
-            self._feature_extractor = Extractor(tqdm_leave=False, device=torch.device("cpu"))
+            # HMR2 Feature 提取：尽量把 ViT 主干网络放到 TPU/XLA 上，加速纯神经网络前向；
+            # 但仍然在 CPU 上做视频 IO / crop 等预处理（见 vitfeat_extractor.get_batch）。
+            feat_device = None
+            if _HAS_XLA:
+                try:
+                    feat_device = xm.xla_device()
+                    Log.info("[Phase1DemoDatasetTPU] HMR2 Feature 使用 XLA 设备进行推理")
+                except Exception as e:  # pragma: no cover - XLA 初始化失败时的兜底
+                    Log.warn(f"[Phase1DemoDatasetTPU] XLA 设备初始化失败，HMR2 Feature 退回 CPU/GPU: {e}")
+                    feat_device = None  # 由 Extractor 内部自行选择 CUDA→CPU
+
+            self._feature_extractor = Extractor(tqdm_leave=False, device=feat_device)
         return self._feature_extractor
 
     def _compute_vo(
