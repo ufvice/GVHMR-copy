@@ -13,8 +13,10 @@ from hmr4d.utils.geo.flip_utils import flip_heatmap_coco17
 class VitPoseExtractor:
     def __init__(self, tqdm_leave=True):
         ckpt_path = "inputs/checkpoints/vitpose/vitpose-h-multi-coco.pth"
+        # 在 GPU 可用时使用 CUDA，否则退回 CPU，方便在 TPU/CPU 环境下运行
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.pose = build_model("ViTPose_huge_coco_256x192", ckpt_path)
-        self.pose.cuda().eval()
+        self.pose.to(self.device).eval()
 
         self.flip_test = True
         self.tqdm_leave = tqdm_leave
@@ -34,7 +36,7 @@ class VitPoseExtractor:
         vitpose = []
         for j in tqdm(range(0, L, batch_size), desc="ViTPose", leave=self.tqdm_leave):
             # Heat map
-            imgs_batch = imgs[j : j + batch_size, :, :, 32:224].cuda()
+            imgs_batch = imgs[j : j + batch_size, :, :, 32:224].to(self.device)
             if self.flip_test:
                 heatmap, heatmap_flipped = self.pose(torch.cat([imgs_batch, imgs_batch.flip(3)], dim=0)).chunk(2)
                 heatmap_flipped = flip_heatmap_coco17(heatmap_flipped)
