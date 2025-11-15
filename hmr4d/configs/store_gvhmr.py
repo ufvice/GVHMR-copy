@@ -7,8 +7,12 @@ import hmr4d.dataset.threedpw.threedpw_motion_train
 import hmr4d.dataset.bedlam.bedlam
 import hmr4d.dataset.h36m.h36m
 
+"""Register config groups for datasets, models, optimizers, metrics, etc."""
+
 # Trainer: Model Optimizer Loss
 import hmr4d.model.gvhmr.gvhmr_pl
+import hmr4d.model.gvhmr.gvhmr_pl_demo
+import hmr4d.model.gvhmr.gvhmr_pl_demo_tpu
 import hmr4d.model.gvhmr.utils.endecoder
 import hmr4d.model.common_utils.optimizer
 import hmr4d.model.common_utils.scheduler_cfg
