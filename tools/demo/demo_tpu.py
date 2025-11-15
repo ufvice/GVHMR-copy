@@ -41,7 +41,7 @@ def parse_args_to_cfg_tpu():
     # Hydra cfg：沿用 demo.yaml，只改 video_name/static_cam/use_dpvo/f_mm/model 等设置
     with initialize_config_module(version_base="1.3", config_module="hmr4d.configs"):
         overrides = [
-            "model/gvhmr=gvhmr_pl_demo_tpu",
+            "model=gvhmr/gvhmr_pl_demo_tpu",
             f"video_name=phase1_tpu_{bbox_pt.stem}",
             f"static_cam={args.static_cam}",
             f"use_dpvo={args.use_dpvo}",
@@ -185,4 +185,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
