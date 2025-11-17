@@ -48,9 +48,13 @@ class DemoPLTPU(pl.LightningModule):
             }
         返回:
             {
+                "smpl_params_incam": Dict[str, Tensor(T, ...)],
+                "smpl_params_global": Dict[str, Tensor(T, ...)],
+                "K_fullimg": (T, 3, 3),
                 "joints_c": (T, 22, 3),
                 "joints_w": (T, 22, 3),
                 "joints_2d": (T, 22, 2),
+                "net_outputs": Dict[str, Any],  # 原始输出，含中间结果
             }
         """
         self._init_xla()
@@ -170,11 +174,16 @@ class DemoPLTPU(pl.LightningModule):
         pred_joints_w = self.pipeline.endecoder.fk_v2(**outputs["pred_smpl_params_global"])  # (1, T, 22, 3)
         pred_kp2d_fullimg = perspective_projection(pred_joints_c, K_fullimg_b)  # (1, T, 22, 2)
 
-        return {
-            "joints_c": pred_joints_c[0].cpu(),  # (T, 22, 3)
-            "joints_w": pred_joints_w[0].cpu(),  # (T, 22, 3)
-            "joints_2d": pred_kp2d_fullimg[0].cpu(),  # (T, 22, 2)
+        pred = {
+            "smpl_params_incam": {k: v[0].detach().cpu() for k, v in outputs["pred_smpl_params_incam"].items()},
+            "smpl_params_global": {k: v[0].detach().cpu() for k, v in outputs["pred_smpl_params_global"].items()},
+            "K_fullimg": K_fullimg,
+            "joints_c": pred_joints_c[0].detach().cpu(),
+            "joints_w": pred_joints_w[0].detach().cpu(),
+            "joints_2d": pred_kp2d_fullimg[0].detach().cpu(),
+            "net_outputs": outputs,
         }
+        return pred
 
     def load_pretrained_model(self, ckpt_path):
         """Load pretrained checkpoint, and assign each weight to the corresponding part."""

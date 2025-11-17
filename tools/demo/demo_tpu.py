@@ -10,6 +10,7 @@ from omegaconf import open_dict
 
 from hmr4d.configs import register_store_gvhmr
 from hmr4d.utils.pylogger import Log
+from hmr4d.utils.net_utils import detach_to_cpu
 
 from hmr4d.dataset.phase1_demo_tpu import Phase1DemoDatasetTPU
 from hmr4d.model.gvhmr.gvhmr_pl_demo_tpu import DemoPLTPU
@@ -118,67 +119,6 @@ def build_dataset(cfg) -> Phase1DemoDatasetTPU:
         f_mm=cfg.f_mm,
     )
     return dataset
-
-
-def map_joints_to_22(joints: torch.Tensor) -> torch.Tensor:
-    """
-    关节点映射到 22 维骨架。
-    目前 EnDecoder.fk_v2 已直接输出 22 关节，这里作为占位映射（identity）。
-    """
-    # joints: (T, J, C)
-    if joints.size(1) == 22:
-        return joints
-    if joints.size(1) < 22:
-        pad = torch.zeros(joints.size(0), 22 - joints.size(1), joints.size(2), device=joints.device, dtype=joints.dtype)
-        return torch.cat([joints, pad], dim=1)
-    return joints[:, :22]
-
-
-def build_entry_from_outputs(
-    sample: Dict[str, Any],
-    outputs: Dict[str, torch.Tensor],
-) -> Dict[str, Any]:
-    """
-    将模型输出整理为 val_labels_phase1.pt 风格的 entry。
-    """
-    K_fullimg = sample["K_fullimg"]  # (T, 3, 3)
-    R_w2c = sample["R_w2c"]  # (T, 3, 3)
-    t_w2c = sample["t_w2c"]  # (T, 3)
-
-    joints_c = outputs["joints_c"]  # (T, J, 3)
-    joints_w = outputs["joints_w"]  # (T, J, 3)
-    joints_2d = outputs["joints_2d"]  # (T, J, 2)
-
-    joints_c_22 = map_joints_to_22(joints_c)
-    joints_w_22 = map_joints_to_22(joints_w)
-    joints_2d_22 = map_joints_to_22(joints_2d)
-
-    T = joints_c_22.shape[0]
-
-    # 简单的帧级 mask（全 1）
-    mask_raw = torch.ones(T, dtype=torch.bool)
-
-    # intrinsic：取首帧
-    intrinsic = K_fullimg[0]
-
-    # extrinsic: [T, 4, 4]，world -> camera
-    extrinsic = torch.eye(4).repeat(T, 1, 1)
-    extrinsic[:, :3, :3] = R_w2c
-    extrinsic[:, :3, 3] = t_w2c
-
-    entry = {
-        "labels": {
-            "joints_2d": joints_2d_22,  # (T, 22, 2)
-            "joints_c": joints_c_22,  # (T, 22, 3)
-            "joints_w": joints_w_22,  # (T, 22, 3)
-            "mask_raw": mask_raw,  # (T,)
-        },
-        "cameras": {
-            "intrinsic": intrinsic,  # (3, 3)
-            "extrinsic": extrinsic,  # (T, 4, 4)
-        },
-    }
-    return entry
 
 
 def main():
@@ -399,7 +339,19 @@ def main():
         t0 = time.time()
 
         outputs = model.predict(sample, static_cam=cfg.static_cam)
-        entry = build_entry_from_outputs(sample, outputs)
+        outputs_cpu = detach_to_cpu(outputs)
+
+        entry = {
+            "smplx_data_c": outputs_cpu.get("smpl_params_incam"),
+            "smplx_data_w": outputs_cpu.get("smpl_params_global"),
+        }
+
+        if entry["smplx_data_c"] is None or entry["smplx_data_w"] is None:
+            Log.warn(
+                f"Video {video_id}: 'smpl_params_incam' 或 'smpl_params_global' "
+                f"未在模型输出中找到。评估将会失败。"
+            )
+
         labels_dict[video_id] = entry
 
         if wandb_run is not None:
